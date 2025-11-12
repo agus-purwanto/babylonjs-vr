@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>VR Box Collector Game</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; font-family: Arial, sans-serif; }
+        #renderCanvas { width: 100%; height: 100%; }
+        #ui { 
+            position: absolute; 
+            top: 20px; 
+            left: 20px; 
+            background: rgba(0,0,0,0.8); 
+            color: white; 
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 1000;
+        }
+        #gameUI {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+        }
+        button {
+            padding: 15px 30px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 18px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        .progress {
+            width: 200px;
+            height: 20px;
+            background: #333;
+            border-radius: 10px;
+            margin: 10px auto;
+            overflow: hidden;
+        }
+        .progress-bar {
+            height: 100%;
+            background: #4CAF50;
+            width: 0%;
+            transition: width 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="renderCanvas"></canvas>
+    
+    <div id="ui">
+        <h2>🎯 Box Collector</h2>
+        <div>Boxes Collected: <span id="score">0</span>/10</div>
+        <div>Time: <span id="timer">60</span>s</div>
+        <div class="progress">
+            <div class="progress-bar" id="progressBar"></div>
+        </div>
+    </div>
+
+    <div id="gameUI">
+        <button onclick="startGame()">🚀 Start Game</button>
+        <button onclick="enterVR()">🕶️ VR Mode</button>
+    </div>
+
+    <script>
+        // Game variables
+        let score = 0;
+        let timeLeft = 60;
+        let gameActive = false;
+        let gameTimer;
+        let boxes = [];
+        let reticle;
+        let vrMode = false;
+
+        const canvas = document.getElementById('renderCanvas');
+        const engine = new BABYLON.Engine(canvas, true);
+        const scene = new BABYLON.Scene(engine);
+        
+        // Create camera
+        const camera = new BABYLON.FreeCamera('camera', new BABYLON.Vector3(0, 1.6, 0), scene);
+        camera.attachControl(canvas, true);
+        
+        // Create lighting
+        const light = new BABYLON.HemisphericLight('light', new BABYLON.Vector3(0, 1, 0), scene);
+        light.intensity = 0.8;
+
+        // Create environment
+        function createEnvironment() {
+            // Ground
+            const ground = BABYLON.MeshBuilder.CreateGround('ground', {width: 30, height: 30}, scene);
+            const groundMat = new BABYLON.StandardMaterial('groundMat', scene);
+            groundMat.diffuseColor = new BABYLON.Color3(0.1, 0.3, 0.1);
+            ground.material = groundMat;
+
+            // Skybox
+            const skybox = BABYLON.MeshBuilder.CreateBox('skybox', {size: 100}, scene);
+            const skyboxMat = new BABYLON.StandardMaterial('skyboxMat', scene);
+            skyboxMat.backFaceCulling = false;
+            skyboxMat.diffuseColor = new BABYLON.Color3(0.1, 0.2, 0.4);
+            skybox.material = skyboxMat;
+
+            // Create some obstacle pillars for navigation
+            for (let i = 0; i < 8; i++) {
+                const pillar = BABYLON.MeshBuilder.CreateCylinder('pillar', {height: 3, diameter: 1}, scene);
+                const angle = (i / 8) * Math.PI * 2;
+                pillar.position.x = Math.cos(angle) * 8;
+                pillar.position.z = Math.sin(angle) * 8;
+                pillar.position.y = 1.5;
+                
+                const pillarMat = new BABYLON.StandardMaterial('pillarMat', scene);
+                pillarMat.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+                pillar.material = pillarMat;
+            }
+        }
+
+        // Create reticle (aiming dot)
+        function createReticle() {
+            reticle = BABYLON.MeshBuilder.CreateDisc('reticle', {radius: 0.02, tessellation: 32}, scene);
+            reticle.position.z = 3;
+            reticle.parent = camera;
+            
+            const reticleMat = new BABYLON.StandardMaterial('reticleMat', scene);
+            reticleMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
+            reticleMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+            reticle.material = reticleMat;
+        }
+
+        // Create floating boxes
+        function createBoxes(count) {
+            // Clear existing boxes
+            boxes.forEach(box => box.dispose());
+            boxes = [];
+
+            for (let i = 0; i < count; i++) {
+                const box = BABYLON.MeshBuilder.CreateBox('box' + i, {size: 0.8}, scene);
+                
+                // Random position around player (but not too close)
+                let validPosition = false;
+                let attempts = 0;
+                
+                while (!validPosition && attempts < 50) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const distance = 4 + Math.random() * 10;
+                    box.position.x = Math.cos(angle) * distance;
+                    box.position.z = Math.sin(angle) * distance;
+                    box.position.y = 1 + Math.random() * 3;
+                    
+                    // Check if not too close to other boxes
+                    validPosition = true;
+                    for (let j = 0; j < boxes.length; j++) {
+                        if (BABYLON.Vector3.Distance(box.position, boxes[j].position) < 3) {
+                            validPosition = false;
+                            break;
+                        }
+                    }
+                    attempts++;
+                }
+
+                // Random color
+                const colors = [
+                    new BABYLON.Color3(1, 0, 0),    // Red
+                    new BABYLON.Color3(0, 1, 0),    // Green
+                    new BABYLON.Color3(0, 0, 1),    // Blue
+                    new BABYLON.Color3(1, 1, 0),    // Yellow
+                    new BABYLON.Color3(1, 0, 1)     // Magenta
+                ];
+                const boxMat = new BABYLON.StandardMaterial('boxMat' + i, scene);
+                boxMat.diffuseColor = colors[i % colors.length];
+                box.material = boxMat;
+
+                // Add floating animation
+                const startY = box.position.y;
+                scene.registerBeforeRender(() => {
+                    if (box.isEnabled()) {
+                        box.rotation.y += 0.02;
+                        box.rotation.x += 0.01;
+                        box.position.y = startY + Math.sin(Date.now() * 0.002 + i) * 0.5;
+                    }
+                });
+
+                boxes.push(box);
+            }
+        }
+
+        // Check if reticle is pointing at a box
+        function checkReticleHit() {
+            const ray = new BABYLON.Ray(camera.position, camera.getDirection(BABYLON.Vector3.Forward()));
+            const hit = scene.pickWithRay(ray);
+            
+            if (hit && hit.pickedMesh && boxes.includes(hit.pickedMesh)) {
+                // Highlight the box
+                hit.pickedMesh.material.emissiveColor = new BABYLON.Color3(1, 1, 1);
+                return hit.pickedMesh;
+            }
+            
+            // Reset all box emissions
+            boxes.forEach(box => {
+                if (box.material.emissiveColor) {
+                    box.material.emissiveColor = new BABYLON.Color3(0, 0, 0);
+                }
+            });
+            
+            return null;
+        }
+
+        // Collect a box
+        function collectBox(box) {
+            if (!box.isEnabled()) return;
+            
+            // Disable the box
+            box.setEnabled(false);
+            
+            // Update score
+            score++;
+            document.getElementById('score').textContent = score;
+            document.getElementById('progressBar').style.width = (score * 10) + '%';
+            
+            // Play sound effect (you could add actual audio files)
+            console.log("Box collected! Sound effect would play here.");
+            
+            // Check win condition
+            if (score >= 10) {
+                endGame(true);
+            }
+        }
+
+        // Start the game
+        function startGame() {
+            if (gameActive) return;
+            
+            // Reset game state
+            score = 0;
+            timeLeft = 60;
+            gameActive = true;
+            
+            document.getElementById('score').textContent = score;
+            document.getElementById('timer').textContent = timeLeft;
+            document.getElementById('progressBar').style.width = '0%';
+            document.getElementById('gameUI').style.display = 'none';
+            
+            // Create game elements
+            createEnvironment();
+            createReticle();
+            createBoxes(15); // Create more boxes than needed
+            
+            // Start timer
+            gameTimer = setInterval(() => {
+                timeLeft--;
+                document.getElementById('timer').textContent = timeLeft;
+                
+                if (timeLeft <= 0) {
+                    endGame(false);
+                }
+            }, 1000);
+
+            // Game loop for checking reticle hits
+            scene.onBeforeRenderObservable.add(() => {
+                if (!gameActive) return;
+                
+                const targetedBox = checkReticleHit();
+                
+                // Auto-collect when looking at box for 1 second
+                if (targetedBox && !targetedBox.collectTimer) {
+                    targetedBox.collectTimer = setTimeout(() => {
+                        collectBox(targetedBox);
+                        targetedBox.collectTimer = null;
+                    }, 1000);
+                } else if (!targetedBox && targetedBox) {
+                    clearTimeout(targetedBox.collectTimer);
+                    targetedBox.collectTimer = null;
+                }
+            });
+        }
+
+        // End the game
+        function endGame(won) {
+            gameActive = false;
+            clearInterval(gameTimer);
+            
+            if (won) {
+                alert('🎉 Congratulations! You collected all 10 boxes!');
+            } else {
+                alert('⏰ Time\'s up! You collected ' + score + ' boxes.');
+            }
+            
+            // Reset UI
+            document.getElementById('gameUI').style.display = 'block';
+            
+            // Cleanup
+            boxes.forEach(box => box.dispose());
+            if (reticle) reticle.dispose();
+            scene.meshes.forEach(mesh => {
+                if (mesh.name.includes('ground') || mesh.name.includes('skybox') || mesh.name.includes('pillar')) {
+                    mesh.dispose();
+                }
+            });
+        }
+
+        // Enter VR mode
+        async function enterVR() {
+            if (vrMode) return;
+            
+            try {
+                const xr = await scene.createDefaultXRExperienceAsync({
+                    uiOptions: {
+                        sessionMode: 'immersive-vr'
+                    }
+                });
+                
+                vrMode = true;
+                document.getElementById('gameUI').innerHTML = '<div style="color:white;background:rgba(0,0,0,0.7);padding:10px;border-radius:5px;">VR Mode Active! Place phone in VR viewer</div>';
+                
+            } catch (error) {
+                alert('VR failed: ' + error.message);
+            }
+        }
+
+        // Handle device rotation for navigation
+        if (window.DeviceOrientationEvent) {
+            window.addEventListener('deviceorientation', (event) => {
+                if (!gameActive) return;
+                
+                // Use device orientation to rotate camera
+                if (event.alpha !== null && event.beta !== null && event.gamma !== null) {
+                    const alpha = event.alpha * (Math.PI / 180);
+                    const beta = event.beta * (Math.PI / 180);
+                    const gamma = event.gamma * (Math.PI / 180);
+                    
+                    // Smooth camera rotation based on device orientation
+                    camera.rotation.y = alpha;
+                    camera.rotation.x = beta * 0.3;
+                }
+            });
+        }
+
+        // Render loop
+        engine.runRenderLoop(() => scene.render());
+        window.addEventListener('resize', () => engine.resize());
+
+        // Initial setup message
+        console.log("Game loaded! Click 'Start Game' to begin.");
+    </script>
+</body>
+</html>
